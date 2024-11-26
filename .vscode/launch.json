@@ -1,0 +1,33 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "debug client",
+            "type": "lldb",
+            "request": "launch",
+            "program": "/Users/maxwellgonick/dev/CS118/CS118-Proj2/project/client",
+            "args": [
+                "localhost",
+                "8080",
+            ],
+            // "stdio": [
+            //     "/Users/maxwellgonick/dev/CS118/CS118-Project1/project/test.bin",
+            //     "/Users/maxwellgonick/dev/CS118/CS118-Project1/project/server.bin"
+            // ]
+        },
+        {
+            "name": "debug server",
+            "type": "lldb",
+            "request": "launch",
+            "program": "/Users/maxwellgonick/dev/CS118/CS118-Proj2/project/server",
+            "args": [
+                "8080",
+            ],
+            // "stdio": [
+            //     null,
+            //     // "/Users/maxwellgonick/dev/CS118/CS118-Project1/project/test.bin",
+            //     "/Users/maxwellgonick/dev/CS118/CS118-Project1/project/server.bin"
+            // ]
+        },
+    ]
+}

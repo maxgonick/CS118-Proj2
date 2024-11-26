@@ -1,7 +1,17 @@
-CC=gcc
-CFLAGS=-s -lcrypto
+OPENSSL_INCLUDE = /opt/homebrew/opt/openssl@3/include
+OPENSSL_LIB = /opt/homebrew/opt/openssl@3/lib
 
-all: clean build
+CC=gcc
+CFLAGS=-I$(OPENSSL_INCLUDE) -L$(OPENSSL_LIB) -lcrypto
+
+all: clean copy_keys build
+
+copy_keys: 
+	cp ../keys/server_cert.bin .
+	cp ../keys/server_key.bin .
+	cp ../keys/ca_public_key.bin .
+
+
 
 default: build
 
