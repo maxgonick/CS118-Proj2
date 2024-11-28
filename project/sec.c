@@ -52,13 +52,13 @@ size_t set_type(uint8_t *buf, uint8_t type)
 size_t set_length(uint8_t *buf, uint16_t length)
 {
     uint16_t length_endian = htons(length);
-    memcpy(buf + 1, &length_endian, 2);
+    memcpy(buf, &length_endian, 2);
     return 2;
 }
 
 size_t set_payload(uint8_t *buf, uint8_t *data, size_t length)
 {
-    memcpy(buf + 3, data, length);
+    memcpy(buf, data, length);
     return length;
 }
 
@@ -100,16 +100,16 @@ ssize_t input_sec(uint8_t *buf, size_t max_length)
         print("SEND CLIENT HELLO");
         /* Insert Client Hello sending logic here */
         size_t size = 0;
+        // Set Outer TLV
+        size += set_type(buf + size, CLIENT_HELLO);
+        size += set_length(buf + size, 35);
 
         // Set Inner TLV
-        size += set_type(buf + PAYLOAD_OFFSET, NONCE_CLIENT_HELLO);
-        size += set_length(buf + PAYLOAD_OFFSET, NONCE_SIZE);
-        size += set_payload(buf + PAYLOAD_OFFSET, nonce, NONCE_SIZE);
+        size += set_type(buf + size, NONCE_CLIENT_HELLO);
+        size += set_length(buf + size, NONCE_SIZE);
+        size += set_payload(buf + size, nonce, NONCE_SIZE);
 
-        // Set Outer TLV
-        size += set_length(buf, size);
-        size += set_type(buf, CLIENT_HELLO);
-
+        fprintf(stderr, "SIZE ISSS: %lu\n", size);
         print_hex(buf, size);
         print_tlv(buf, size);
         state_sec = CLIENT_SERVER_HELLO_AWAIT;
@@ -120,7 +120,41 @@ ssize_t input_sec(uint8_t *buf, size_t max_length)
         print("SEND SERVER HELLO");
 
         /* Insert Server Hello sending logic here */
+        uint16_t size = 0;
 
+        // Server Hello TLV
+
+        size += set_type(buf, SERVER_HELLO);
+
+        // Save 2 bytes for length
+
+        uint8_t *lengthPointer = (buf + size);
+        size += 2;
+
+        // Nonce TLV
+        size += set_type(buf + size, NONCE_SERVER_HELLO);
+        size += set_length(buf + size, NONCE_SIZE);
+        size += set_payload(buf + size, peer_nonce, NONCE_SIZE);
+
+        // Certificate TLV
+        memcpy(buf + size, certificate, cert_size);
+
+        size += cert_size;
+
+        // Nonce Signature TLV
+
+        size += set_type(buf + size, NONCE_SIGNATURE_SERVER_HELLO);
+        uint16_t *signature_length_checkpoint = (uint16_t *)(buf + size);
+        size += 2;
+
+        uint16_t signature_length = sign(peer_nonce, NONCE_SIZE, buf + size);
+
+        set_length(signature_length_checkpoint, signature_length);
+        size += signature_length;
+
+        set_length(lengthPointer, size);
+
+        print_tlv(buf, size);
         state_sec = SERVER_KEY_EXCHANGE_REQUEST_AWAIT;
         return 0;
     }
@@ -169,8 +203,8 @@ void output_sec(uint8_t *buf, size_t length)
             exit(4);
 
         print("RECV CLIENT HELLO");
-        print_tlv(buf, 38);
         print_hex(buf, 38);
+        print_tlv(buf, 38);
         // Process outer TLV
         uint8_t outerType;
         memcpy(&outerType, buf, sizeof(uint8_t));
