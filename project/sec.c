@@ -109,7 +109,6 @@ ssize_t input_sec(uint8_t *buf, size_t max_length)
         size += set_length(buf + size, NONCE_SIZE);
         size += set_payload(buf + size, nonce, NONCE_SIZE);
 
-        fprintf(stderr, "SIZE ISSS: %lu\n", size);
         print_hex(buf, size);
         print_tlv(buf, size);
         state_sec = CLIENT_SERVER_HELLO_AWAIT;
@@ -144,10 +143,10 @@ ssize_t input_sec(uint8_t *buf, size_t max_length)
         // Nonce Signature TLV
 
         size += set_type(buf + size, NONCE_SIGNATURE_SERVER_HELLO);
-        uint16_t *signature_length_checkpoint = (uint16_t *)(buf + size);
+        uint8_t *signature_length_checkpoint = buf + size;
         size += 2;
 
-        uint16_t signature_length = sign(peer_nonce, NONCE_SIZE, buf + size);
+        size_t signature_length = sign(peer_nonce, NONCE_SIZE, buf + size);
 
         set_length(signature_length_checkpoint, signature_length);
         size += signature_length;
@@ -156,7 +155,7 @@ ssize_t input_sec(uint8_t *buf, size_t max_length)
 
         print_tlv(buf, size);
         state_sec = SERVER_KEY_EXCHANGE_REQUEST_AWAIT;
-        return 0;
+        return size;
     }
     case CLIENT_KEY_EXCHANGE_REQUEST_SEND:
     {
@@ -201,6 +200,7 @@ void output_sec(uint8_t *buf, size_t length)
     {
         if (*buf != CLIENT_HELLO)
             exit(4);
+        /* Insert Client Hello receiving logic here */
 
         print("RECV CLIENT HELLO");
         print_hex(buf, 38);
@@ -218,12 +218,6 @@ void output_sec(uint8_t *buf, size_t length)
         uint16_t innerLength;
         memcpy(&innerLength, buf + PAYLOAD_OFFSET + 1, sizeof(uint16_t));
         memcpy(&peer_nonce, buf + PAYLOAD_OFFSET + 3, NONCE_SIZE);
-        // print_tlv(buf, length);
-
-        // fprintf(stderr, "Type: %hhu Length: %hu\n", type, length);
-        // print_hex(peer_nonce, NONCE_SIZE);
-
-        /* Insert Client Hello receiving logic here */
 
         state_sec = SERVER_SERVER_HELLO_SEND;
         break;
@@ -233,9 +227,93 @@ void output_sec(uint8_t *buf, size_t length)
         if (*buf != SERVER_HELLO)
             exit(4);
 
-        print("RECV SERVER HELLO");
-
         /* Insert Server Hello receiving logic here */
+
+        print("RECV SERVER HELLO");
+        size_t size = 0;
+        // Process Outermost (SERVER HELLO) TLV
+        uint8_t server_hello_type;
+        memcpy(&server_hello_type, buf + size, sizeof(uint8_t));
+        size += sizeof(uint8_t);
+        uint16_t server_hello_length;
+        memcpy(&server_hello_length, buf + size, sizeof(uint16_t));
+        server_hello_length = ntohs(server_hello_length);
+        size += sizeof(uint16_t);
+        // Process Nonce TLV
+        uint8_t nonce_type;
+        memcpy(&nonce_type, buf + size, sizeof(uint8_t));
+        size += sizeof(uint8_t);
+        uint16_t nonce_length;
+        memcpy(&nonce_length, buf + size, sizeof(uint16_t));
+        nonce_length = ntohs(nonce_length);
+        size += sizeof(uint16_t);
+        memcpy(peer_nonce, buf + size, nonce_length);
+        size += nonce_length;
+
+        // Process Certificate TLV
+        uint8_t certificate_type;
+        memcpy(&certificate_type, buf + size, sizeof(uint8_t));
+        size += sizeof(uint8_t);
+        uint16_t certificate_length;
+        memcpy(&certificate_length, buf + size, sizeof(uint16_t));
+        certificate_length = ntohs(certificate_length);
+        size += sizeof(uint16_t);
+        // Process Certificate Public Key
+        uint8_t cert_public_key_type;
+        memcpy(&cert_public_key_type, buf + size, sizeof(uint8_t));
+        size += sizeof(uint8_t);
+        uint16_t cert_public_key_length;
+        memcpy(&cert_public_key_length, buf + size, sizeof(uint16_t));
+        cert_public_key_length = ntohs(cert_public_key_length);
+        size += sizeof(uint16_t);
+        uint8_t *cert_public_key = malloc(cert_public_key_length);
+        memcpy(cert_public_key, buf + size, cert_public_key_length);
+        size += cert_public_key_length;
+        // Process Certificate Signature
+        uint8_t cert_signature_type;
+        memcpy(&cert_signature_type, buf + size, sizeof(uint8_t));
+        size += sizeof(uint8_t);
+        uint16_t cert_signature_length;
+        memcpy(&cert_signature_length, buf + size, sizeof(uint16_t));
+        cert_signature_length = ntohs(cert_signature_length);
+        size += sizeof(uint16_t);
+        uint8_t *cert_signature = malloc(cert_public_key_length);
+        memcpy(cert_signature, buf + size, cert_public_key_length);
+        size += cert_signature_length;
+        // Process Nonce Signature
+        uint8_t nonce_signature_type;
+        memcpy(&nonce_signature_type, buf + size, sizeof(uint8_t));
+        size += sizeof(uint8_t);
+        uint16_t nonce_signature_length;
+        memcpy(&nonce_signature_length, buf + size, sizeof(uint16_t));
+        nonce_signature_length = ntohs(nonce_signature_length);
+        size += sizeof(uint16_t);
+        uint8_t *nonce_signature = malloc(nonce_signature_length);
+        memcpy(nonce_signature, buf + size, nonce_signature_length);
+        size += nonce_signature_length;
+        fprintf(stderr, "SIZE IS: %zu\n", size);
+        print_tlv(buf, size);
+
+        // Verify Certificate with CA Public Key
+        int cert_result = verify(cert_public_key, cert_public_key_length, cert_signature, cert_signature_length, ec_ca_public_key);
+        fprintf(stderr, "CERT RESULT IS: %d\n", cert_result);
+
+        if (cert_result == false)
+        {
+            exit(1);
+        }
+
+        load_peer_public_key(cert_public_key, cert_public_key_length);
+
+        // Verify Client Nonce
+        int nonce_result = verify(peer_nonce, nonce_length, nonce_signature, nonce_signature_length, ec_peer_public_key);
+
+        fprintf(stderr, "NONCE RESULT IS: %d\n", nonce_result);
+
+        if (nonce_result == false)
+        {
+            exit(2);
+        }
 
         state_sec = CLIENT_KEY_EXCHANGE_REQUEST_SEND;
         break;
