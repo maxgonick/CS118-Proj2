@@ -10,6 +10,7 @@
                 "localhost",
                 "8080",
             ],
+            "cwd": "/Users/maxwellgonick/dev/CS118/CS118-Proj2/project"
             // "stdio": [
             //     "/Users/maxwellgonick/dev/CS118/CS118-Project1/project/test.bin",
             //     "/Users/maxwellgonick/dev/CS118/CS118-Project1/project/server.bin"
@@ -23,6 +24,7 @@
             "args": [
                 "8080",
             ],
+            "cwd": "/Users/maxwellgonick/dev/CS118/CS118-Proj2/project"
             // "stdio": [
             //     null,
             //     // "/Users/maxwellgonick/dev/CS118/CS118-Project1/project/test.bin",

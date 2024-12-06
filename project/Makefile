@@ -1,15 +1,16 @@
-OPENSSL_INCLUDE = /opt/homebrew/opt/openssl@3/include
-OPENSSL_LIB = /opt/homebrew/opt/openssl@3/lib
+# OPENSSL_INCLUDE = /opt/homebrew/opt/openssl@3/include
+# OPENSSL_LIB = /opt/homebrew/opt/openssl@3/lib
 
 CC=gcc
-CFLAGS=-I$(OPENSSL_INCLUDE) -L$(OPENSSL_LIB) -lcrypto -g
+# CFLAGS=-I$(OPENSSL_INCLUDE) -L$(OPENSSL_LIB) -lcrypto -g
+CFLAGS=-s -lcrypto
 
-all: clean copy_keys build
+all: clean build 
 
 copy_keys: 
-	cp ../keys/server_cert.bin .
-	cp ../keys/server_key.bin .
-	cp ../keys/ca_public_key.bin .
+	cp ../source/keys/server_cert.bin .
+	cp ../source/keys/server_key.bin .
+	cp ../source/keys/ca_public_key.bin .
 
 
 
@@ -25,6 +26,6 @@ clean:
 zip: clean
 	rm -f project2.zip
 	mkdir -p project
-	cp server.c client.c transport.c io.c security.c sec.c transport.h io.h consts.h security.h sec.h Makefile project
+	cp server.c client.c transport.c io.c security.c sec.c transport.h io.h consts.h security.h sec.h Makefile README.md project 
 	zip project2.zip project/*
 	rm -rf project

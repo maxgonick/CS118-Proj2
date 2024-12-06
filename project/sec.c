@@ -8,6 +8,7 @@
 #include "security.h"
 
 #define PAYLOAD_OFFSET 3
+#define IV_LENGTH 16
 
 int state_sec = 0;              // Current state for handshake
 uint8_t nonce[NONCE_SIZE];      // Store generated nonce to verify signature
@@ -109,7 +110,6 @@ ssize_t input_sec(uint8_t *buf, size_t max_length)
         size += set_length(buf + size, NONCE_SIZE);
         size += set_payload(buf + size, nonce, NONCE_SIZE);
 
-        print_hex(buf, size);
         print_tlv(buf, size);
         state_sec = CLIENT_SERVER_HELLO_AWAIT;
         return size;
@@ -123,7 +123,7 @@ ssize_t input_sec(uint8_t *buf, size_t max_length)
 
         // Server Hello TLV
 
-        size += set_type(buf, SERVER_HELLO);
+        size += set_type(buf + size, SERVER_HELLO);
 
         // Save 2 bytes for length
 
@@ -133,12 +133,18 @@ ssize_t input_sec(uint8_t *buf, size_t max_length)
         // Nonce TLV
         size += set_type(buf + size, NONCE_SERVER_HELLO);
         size += set_length(buf + size, NONCE_SIZE);
-        size += set_payload(buf + size, peer_nonce, NONCE_SIZE);
+        size += set_payload(buf + size, nonce, NONCE_SIZE);
 
         // Certificate TLV
-        memcpy(buf + size, certificate, cert_size);
 
-        size += cert_size;
+        // find size of certificate
+        uint16_t cert_length;
+        memcpy(&cert_length, certificate + 1, 2);
+        cert_length = ntohs(cert_length);
+        // fprintf(stderr, "CERT SIZE IS %u\n", cert_length);
+        memcpy(buf + size, certificate, cert_length + 3);
+
+        size += cert_length + 3;
 
         // Nonce Signature TLV
 
@@ -151,7 +157,7 @@ ssize_t input_sec(uint8_t *buf, size_t max_length)
         set_length(signature_length_checkpoint, signature_length);
         size += signature_length;
 
-        set_length(lengthPointer, size);
+        set_length(lengthPointer, size - 3);
 
         print_tlv(buf, size);
         state_sec = SERVER_KEY_EXCHANGE_REQUEST_AWAIT;
@@ -162,28 +168,107 @@ ssize_t input_sec(uint8_t *buf, size_t max_length)
         print("SEND KEY EXCHANGE REQUEST");
 
         /* Insert Key Exchange Request sending logic here */
+        derive_secret();
+        derive_keys();
+
+        size_t size = 0;
+        size += set_type(buf + size, KEY_EXCHANGE_REQUEST);
+        uint8_t *key_exchange_length = buf + size;
+        size += sizeof(uint16_t);
+        // Set Certificate
+        size += set_type(buf + size, CERTIFICATE);
+        uint8_t *certificate_length = buf + size;
+        size += sizeof(uint16_t);
+        size += set_type(buf + size, PUBLIC_KEY);
+        size += set_length(buf + size, pub_key_size);
+        set_payload(buf + size, public_key, pub_key_size);
+        size += pub_key_size;
+        size += set_type(buf + size, SIGNATURE);
+        uint8_t *signature_length_checkpoint = buf + size;
+        size += sizeof(uint16_t);
+        size_t signature_length = sign(public_key, pub_key_size, buf + size);
+        set_length(signature_length_checkpoint, signature_length);
+        size += signature_length;
+
+        set_length(certificate_length, size);
+
+        size += set_type(buf + size, NONCE_SIGNATURE_KEY_EXCHANGE_REQUEST);
+        uint8_t *nonce_signature_length_checkpoint = buf + size;
+        size += sizeof(uint16_t);
+        size_t nonce_signature_length = sign(peer_nonce, NONCE_SIZE, buf + size);
+        set_length(nonce_signature_length_checkpoint, nonce_signature_length);
+        size += nonce_signature_length;
+
+        set_length(key_exchange_length, size - 3);
+
+        print_tlv(buf, size);
 
         state_sec = CLIENT_FINISHED_AWAIT;
-        return 0;
+        return size;
     }
     case SERVER_FINISHED_SEND:
     {
         print("SEND FINISHED");
+        derive_secret();
+        derive_keys();
 
         /* Insert Finished sending logic here */
+        size_t size = 0;
+        size += set_type(buf + size, FINISHED);
+        set_length(buf + size, 0);
 
         state_sec = DATA_STATE;
-        return 0;
+        return size;
     }
     case DATA_STATE:
     {
+        uint8_t std_in_text[943];
+        uint16_t std_in_size = input_io(std_in_text, 943);
+        if (std_in_size <= 0)
+        {
+            return 0;
+        }
+        fprintf(stderr, "STDIN Size: %hu\n", std_in_size);
         /* Insert Data sending logic here */
+        size_t size = 0;
 
+        // Set Data TLV
+        size += set_type(buf + size, DATA);
+        uint8_t *dataLengthCheckpoint = buf + size;
+        size += sizeof(uint16_t);
+
+        // SET IV TLV
+        size += set_type(buf + size, INITIALIZATION_VECTOR);
+        size += set_length(buf + size, IV_LENGTH);
+        uint8_t *ivCheckpoint = buf + size;
+        size += IV_LENGTH;
+
+        // Set Ciphertext TLV
+        size += set_type(buf + size, CIPHERTEXT);
+        uint8_t *ciphertextLengthCheckpoint = buf + size;
+        size += sizeof(uint16_t);
+        uint8_t *ciphertextCheckpoint = buf + size;
+        size_t cipher_size = encrypt_data(std_in_text, std_in_size, ivCheckpoint, buf + size);
+        set_length(ciphertextLengthCheckpoint, cipher_size);
+        size += cipher_size;
+        print("SANITY 2");
+        // Set MAC TLV
+        size += set_type(buf + size, MESSAGE_AUTHENTICATION_CODE);
+        size += set_length(buf + size, 32);
+        uint8_t *iv_and_ciphertext = malloc(IV_LENGTH + cipher_size);
+        memcpy(iv_and_ciphertext, ivCheckpoint, IV_LENGTH);
+        memcpy(iv_and_ciphertext + IV_LENGTH, ciphertextCheckpoint, cipher_size);
+        hmac(iv_and_ciphertext, IV_LENGTH + cipher_size, buf + size);
+        size += 32;
+
+        set_length(dataLengthCheckpoint, size - 3);
+
+        // size += set_payload(buf + size, init)
         // PT refers to the amount you read from stdin in bytes
         // CT refers to the resulting ciphertext size
         // fprintf(stderr, "SEND DATA PT %ld CT %lu\n", stdin_size, cip_size);
 
-        return 0;
+        return size;
     }
     default:
         return 0;
@@ -203,21 +288,27 @@ void output_sec(uint8_t *buf, size_t length)
         /* Insert Client Hello receiving logic here */
 
         print("RECV CLIENT HELLO");
-        print_hex(buf, 38);
         print_tlv(buf, 38);
         // Process outer TLV
-        uint8_t outerType;
-        memcpy(&outerType, buf, sizeof(uint8_t));
-        uint16_t outerLength;
-        memcpy(&outerLength, buf + 1, sizeof(uint16_t));
-        outerLength = ntohs(outerLength);
+        size_t size = 0;
+        uint8_t client_hello_type;
+        memcpy(&client_hello_type, buf + size, sizeof(uint8_t));
+        size += sizeof(uint8_t);
+        uint16_t client_hello_length;
+        memcpy(&client_hello_length, buf + size, sizeof(uint16_t));
+        client_hello_length = ntohs(client_hello_length);
+        size += sizeof(uint16_t);
 
-        // Process inner TLV
-        uint8_t innerType;
-        memcpy(&innerType, buf + PAYLOAD_OFFSET, sizeof(uint8_t));
-        uint16_t innerLength;
-        memcpy(&innerLength, buf + PAYLOAD_OFFSET + 1, sizeof(uint16_t));
-        memcpy(&peer_nonce, buf + PAYLOAD_OFFSET + 3, NONCE_SIZE);
+        // Process Nonce TLV
+        uint8_t nonce_type;
+        memcpy(&nonce_type, buf + size, sizeof(uint8_t));
+        size += sizeof(uint8_t);
+        uint16_t nonce_length;
+        memcpy(&nonce_length, buf + size, sizeof(uint16_t));
+        nonce_length = ntohs(nonce_length);
+        size += sizeof(uint16_t);
+        memcpy(&peer_nonce, buf + size, nonce_length);
+        size += nonce_length;
 
         state_sec = SERVER_SERVER_HELLO_SEND;
         break;
@@ -289,6 +380,7 @@ void output_sec(uint8_t *buf, size_t length)
         nonce_signature_length = ntohs(nonce_signature_length);
         size += sizeof(uint16_t);
         uint8_t *nonce_signature = malloc(nonce_signature_length);
+        // fprintf(stderr, "NONCE SIG LENGTH: %d\n", nonce_signature_length);
         memcpy(nonce_signature, buf + size, nonce_signature_length);
         size += nonce_signature_length;
         fprintf(stderr, "SIZE IS: %zu\n", size);
@@ -303,14 +395,20 @@ void output_sec(uint8_t *buf, size_t length)
             exit(1);
         }
 
-        load_peer_public_key(cert_public_key, cert_public_key_length);
+ 
 
         // Verify Client Nonce
-        int nonce_result = verify(peer_nonce, nonce_length, nonce_signature, nonce_signature_length, ec_peer_public_key);
+        // fprintf(stderr, "Peer Nonce is: ");
+        // print_hex(peer_nonce, NONCE_SIZE);
+        // fprintf(stderr, "Nonce Signature Length is: %d\n", nonce_signature_length);
+        // print_hex(nonce_signature, nonce_signature_length);
+        // fprintf(stderr, "Public Key is: ");
+        // print_hex(ec_peer_public_key, cert_public_key_length);
+        int nonce_result = verify(nonce, NONCE_SIZE, nonce_signature, nonce_signature_length, ec_peer_public_key);
 
         fprintf(stderr, "NONCE RESULT IS: %d\n", nonce_result);
 
-        if (nonce_result == false)
+        if (nonce_result != true)
         {
             exit(2);
         }
@@ -326,6 +424,79 @@ void output_sec(uint8_t *buf, size_t length)
         print("RECV KEY EXCHANGE REQUEST");
 
         /* Insert Key Exchange Request receiving logic here */
+        size_t size = 0;
+        uint8_t key_exchange_request_type;
+        memcpy(&key_exchange_request_type, buf + size, sizeof(uint8_t));
+        size += sizeof(uint8_t);
+        uint16_t key_exchange_request_length;
+        memcpy(&key_exchange_request_length, buf + size, sizeof(uint16_t));
+        key_exchange_request_length = ntohs(key_exchange_request_length);
+        size += sizeof(uint16_t);
+
+        // Process Certificate TLV
+        uint8_t certificate_type;
+        memcpy(&certificate_type, buf + size, sizeof(uint8_t));
+        size += sizeof(uint8_t);
+        uint16_t certificate_length;
+        memcpy(&certificate_length, buf + size, sizeof(uint16_t));
+        certificate_length = ntohs(certificate_length);
+        size += sizeof(uint16_t);
+        // Process Certificate Public Key
+        uint8_t cert_public_key_type;
+        memcpy(&cert_public_key_type, buf + size, sizeof(uint8_t));
+        size += sizeof(uint8_t);
+        uint16_t cert_public_key_length;
+        memcpy(&cert_public_key_length, buf + size, sizeof(uint16_t));
+        cert_public_key_length = ntohs(cert_public_key_length);
+        size += sizeof(uint16_t);
+        uint8_t *cert_public_key = malloc(cert_public_key_length);
+        memcpy(cert_public_key, buf + size, cert_public_key_length);
+        size += cert_public_key_length;
+        // Process Certificate Signature
+        uint8_t cert_signature_type;
+        memcpy(&cert_signature_type, buf + size, sizeof(uint8_t));
+        size += sizeof(uint8_t);
+        uint16_t cert_signature_length;
+        memcpy(&cert_signature_length, buf + size, sizeof(uint16_t));
+        cert_signature_length = ntohs(cert_signature_length);
+        size += sizeof(uint16_t);
+        uint8_t *cert_signature = malloc(cert_public_key_length);
+        memcpy(cert_signature, buf + size, cert_public_key_length);
+        size += cert_signature_length;
+
+        // Process Nonce Signature
+        uint8_t nonce_signature_type;
+        memcpy(&nonce_signature_type, buf + size, sizeof(uint8_t));
+        size += sizeof(uint8_t);
+        uint16_t nonce_signature_length;
+        memcpy(&nonce_signature_length, buf + size, sizeof(uint16_t));
+        nonce_signature_length = ntohs(nonce_signature_length);
+        size += sizeof(uint16_t);
+        uint8_t *nonce_signature = malloc(nonce_signature_length);
+        memcpy(nonce_signature, buf + size, nonce_signature_length);
+        size += nonce_signature_length;
+        fprintf(stderr, "SIZE IS: %zu\n", size);
+        print_tlv(buf, size);
+        load_peer_public_key(cert_public_key, cert_public_key_length);
+
+        // Verify Certificate with CA Public Key
+        int cert_result = verify(cert_public_key, cert_public_key_length, cert_signature, cert_signature_length, ec_peer_public_key);
+        fprintf(stderr, "CERT RESULT IS: %d\n", cert_result);
+
+        if (cert_result == false)
+        {
+            exit(1);
+        }
+        print_hex(peer_nonce, NONCE_SIZE);
+        // Verify Client Nonce
+        int nonce_result = verify(nonce, NONCE_SIZE, nonce_signature, nonce_signature_length, ec_peer_public_key);
+
+        fprintf(stderr, "NONCE RESULT IS: %d\n", nonce_result);
+
+        if (nonce_result == false)
+        {
+            exit(2);
+        }
 
         state_sec = SERVER_FINISHED_SEND;
         break;
@@ -344,12 +515,80 @@ void output_sec(uint8_t *buf, size_t length)
     {
         if (*buf != DATA)
             exit(4);
+        size_t size = 0;
+        uint8_t data_type;
+        memcpy(&data_type, buf + size, sizeof(uint8_t));
+        size += sizeof(uint8_t);
+        uint16_t data_length;
+        memcpy(&data_length, buf + size, sizeof(uint16_t));
+        data_length = ntohs(data_length);
+        size += sizeof(uint16_t);
+        // Process IV
+        uint8_t IV_type;
+        memcpy(&IV_type, buf + size, sizeof(uint8_t));
+        size += sizeof(uint8_t);
+        uint16_t IV_length;
+        memcpy(&IV_length, buf + size, sizeof(uint16_t));
+        IV_length = ntohs(IV_length);
+        size += sizeof(uint16_t);
+        uint8_t IV_data[IV_length];
+        memcpy(IV_data, buf + size, IV_length);
+        size += IV_length;
+
+        // Process Ciphertext
+        uint8_t ciphertext_type;
+        memcpy(&ciphertext_type, buf + size, sizeof(uint8_t));
+        size += sizeof(uint8_t);
+        uint16_t ciphertext_length;
+        memcpy(&ciphertext_length, buf + size, sizeof(uint16_t));
+        ciphertext_length = ntohs(ciphertext_length);
+        size += sizeof(uint16_t);
+
+        uint8_t *ciphertext_data = malloc(ciphertext_length);
+        memcpy(ciphertext_data, buf + size, ciphertext_length);
+        size += ciphertext_length;
+
+        // Process MAC
+        uint8_t mac_type;
+        memcpy(&mac_type, buf + size, sizeof(uint8_t));
+        size += sizeof(uint8_t);
+        uint16_t mac_length;
+        memcpy(&mac_length, buf + size, sizeof(uint16_t));
+        mac_length = ntohs(mac_length);
+        size += sizeof(uint16_t);
+        uint8_t mac_data[32];
+        memcpy(mac_data, buf + size, 32);
+        size += mac_length;
+
+        // Calculate HMAC Digest
+        uint8_t *iv_and_ciphertext = malloc(IV_length + ciphertext_length);
+        memcpy(iv_and_ciphertext, IV_data, IV_length);
+        memcpy(iv_and_ciphertext + IV_length, ciphertext_data, ciphertext_length);
+        uint8_t hmac_data[32];
+        hmac(iv_and_ciphertext, IV_length + ciphertext_length, hmac_data);
+        print_tlv(buf, size);
+
+        fprintf(stderr, "SENT MAC IS:");
+        print_hex(mac_data, mac_length);
+        fprintf(stderr, "CALCULATED HMAC IS:");
+        print_hex(hmac_data, 32);
+        int result = memcmp(hmac_data, mac_data, 32);
+        if (result != 0)
+        {
+            print("HMAC DOES NOT MATCH");
+            exit(3);
+        }
+
+        print("HMAC MATCH");
+        uint8_t decrypted_data[943];
+        size_t decrypt_size = decrypt_cipher(ciphertext_data, ciphertext_length, IV_data, decrypted_data);
+        fprintf(stderr, "RECV DATA PT %ld CT %hu\n", decrypt_size, ciphertext_length);
+        return output_io(decrypted_data, decrypt_size);
 
         /* Insert Data receiving logic here */
 
         // PT refers to the resulting plaintext size in bytes
         // CT refers to the received ciphertext size
-        // fprintf(stderr, "RECV DATA PT %ld CT %hu\n", data_len, cip_len);
         break;
     }
     default:
